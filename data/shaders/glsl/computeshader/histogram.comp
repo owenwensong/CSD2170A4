@@ -1,0 +1,52 @@
+/*!*****************************************************************************
+ * @file    histogram.comp
+ * @author  Owen Huang Wensong, w.huang, 390008220
+ * @date    05 NOV 2022
+ * @brief   histogram implementation
+ * 
+ * @par Copyright (C) 2022 DigiPen Institute of Technology. All rights reserved.
+*******************************************************************************/
+#version 450
+
+// Struct of Array format for better memory locality
+struct histoSSBO
+{
+	uint  m_Bin[256];
+	float m_CDF[256];
+};
+
+layout (local_size_x = 16, local_size_y = 16) in;
+layout (binding = 0, rgba8) uniform readonly image2D inRGB;
+layout (binding = 1, rgba8) uniform image2D outRGB;
+
+// https://www.khronos.org/opengl/wiki/Interface_Block_(GLSL)
+layout (std430, binding = 2) buffer OutHisto
+{
+  histoSSBO m_Data; // Data arriving here is initialized to 0 by vkCmdFillBuffer
+} outHisto;
+
+// Assumption made: 16 x 16 block size so minimum local invocation reaches 256
+shared uint s_Bin[256];
+
+void main()
+{
+  // initialize shared memory
+  s_Bin[gl_LocalInvocationIndex] = 0;
+
+  // use only Y of image YUV and remap from [0, 1] to [0, 255]
+  ivec2 imgLoc = ivec2(gl_GlobalInvocationID.xy);
+  float y = 255.0 * dot(imageLoad(inRGB, imgLoc).rgb, vec3(0.299, 0.587, 0.114));
+
+  barrier();  // ensure s_Bin fully initialized
+  
+  // bounds check accounts for out of bounds threads skewing black pixel results
+  ivec2 imgSize = imageSize(inRGB);
+  if (imgLoc.x < imgSize.x && imgLoc.y < imgSize.y)
+  {
+    atomicAdd(s_Bin[clamp(int(y), 0, 255)], 1);
+  }
+
+  barrier();  // ensure s_Bin fully populated (if prevents memoryBarrierShared)
+
+  atomicAdd(outHisto.m_Data.m_Bin[gl_LocalInvocationIndex], s_Bin[gl_LocalInvocationIndex]);
+}

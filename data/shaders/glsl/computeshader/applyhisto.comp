@@ -1,0 +1,66 @@
+/*!*****************************************************************************
+ * @file    applyhisto.comp
+ * @author  Owen Huang Wensong, w.huang, 390008220
+ * @date    05 NOV 2022
+ * @brief   final color correction based on CDF value
+ * 
+ * @par Copyright (C) 2022 DigiPen Institute of Technology. All rights reserved.
+*******************************************************************************/
+#version 450
+
+// Struct of Array format for better memory locality
+struct histoSSBO
+{
+	uint  m_Bin[256];
+	float m_CDF[256];
+};
+
+layout (local_size_x = 16, local_size_y = 16) in;
+layout (binding = 0, rgba8) uniform readonly image2D inRGB;
+layout (binding = 1, rgba8) uniform image2D outRGB;
+
+// https://www.khronos.org/opengl/wiki/Interface_Block_(GLSL)
+layout (std430, binding = 2) buffer InHisto
+{
+  histoSSBO m_Data;
+} inHisto;
+
+// Assumption made: 16 x 16 block size so minimum local invocation reaches 256
+shared float s_CDF[256];
+
+const mat3 RGB2YUV = mat3
+(
+  0.299, -0.169,  0.499, // col 0
+  0.587, -0.331, -0.418, // col 1
+  0.114,  0.499, -0.0813 // col 2
+);
+
+const mat3 YprimeUV2RGB = mat3
+(
+  1.0, 1.0, 1.0,      // col 0
+  0.0, -0.344, 1.772, // col 1
+  1.402, -0.714, 0.0  // col 2
+);
+
+void main()
+{
+  s_CDF[gl_LocalInvocationIndex] = inHisto.m_Data.m_CDF[gl_LocalInvocationIndex];
+ 
+  barrier();  // ensure s_CDF fully initialized
+
+  float cdfMin = s_CDF[0];
+  ivec2 imgLoc = ivec2(gl_GlobalInvocationID.xy);
+  vec4 imgCol = imageLoad(inRGB, imgLoc);
+  
+  // convert to YUV
+  imgCol.rgb = RGB2YUV * imgCol.rgb;
+
+  // color correction
+  imgCol.r = clamp((s_CDF[clamp(int(255.0 * imgCol.r), 0, 255)] - cdfMin) / (1.0 - cdfMin), 0.0, 1.0);
+  
+  // convert to RGB
+  imgCol.rgb = YprimeUV2RGB * imgCol.rgb;
+
+  imageStore(outRGB, imgLoc, imgCol);
+}
+

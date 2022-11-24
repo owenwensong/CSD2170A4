@@ -1,0 +1,79 @@
+/*!*****************************************************************************
+ * @file    cdfscan.comp
+ * @author  Owen Huang Wensong, w.huang, 390008220
+ * @date    05 NOV 2022
+ * @brief   Brent-Kung parallel scan implementation for CDF values
+ * 
+ * @par Copyright (C) 2022 DigiPen Institute of Technology. All rights reserved.
+*******************************************************************************/
+#version 450
+
+// Struct of Array format for better memory locality
+struct histoSSBO
+{
+	uint  m_Bin[256];
+	float m_CDF[256];
+};
+
+layout (local_size_x = 128) in;
+layout (binding = 0, rgba8) uniform readonly image2D inRGB;
+layout (binding = 1, rgba8) uniform image2D outRGB;
+
+// https://www.khronos.org/opengl/wiki/Interface_Block_(GLSL)
+layout (std430, binding = 2) buffer OutHisto
+{
+  histoSSBO m_Data;
+} outHisto;
+
+// 32b uint max val 4,294,967,295 ~ 65,536 * 65,536 (very unlikely resolution)
+// which is why I am deciding to use it to accumulate instead of a float
+shared uint s_AccumulateBin[256];
+
+void main()
+{
+  int threadIdx = int(gl_LocalInvocationIndex);
+  int blockSize = int(gl_WorkGroupSize.x);
+
+  // initialize shared memory bins for accumulation
+  for (int i = 0; i < 2; ++i)
+  {
+    int idx = threadIdx + i * blockSize;
+    s_AccumulateBin[idx] = outHisto.m_Data.m_Bin[idx];
+    barrier();// ensure s_AccumulateBin initialized and coalesced access
+  }
+
+  for (int stride = 1; stride < 256; stride *= 2)
+  {
+    int idx0 = (threadIdx + 1) * stride * 2 - 1;
+    int idx1 = idx0 - stride;
+    if (idx0 < 256 && idx1 >= 0)
+    { // no need to atomicAdd since operations never overlap
+      s_AccumulateBin[idx0] += s_AccumulateBin[idx1];
+    }
+    barrier();
+  }
+
+  // end of reduction loop barrier & begin of post scan loop barrier OK
+
+  for (int stride = 64; stride > 0; stride /= 2)
+  {
+    barrier();
+    int idx0 = (threadIdx + 1) * stride * 2 - 1;
+    int idx1 = idx0 + stride;
+    if (idx1 < 256)
+    {
+      s_AccumulateBin[idx1] += s_AccumulateBin[idx0];
+    }
+  }
+
+  // finalize and output CDF calculation
+  ivec2 imgSize = imageSize(inRGB);
+  float CDFMul = 1.0 / float(imgSize.x * imgSize.y);
+  for (int i = 0; i < 2; ++i)
+  {
+    barrier();// ensure s_AccumulateBin accumulated and coalesced access
+    int idx = threadIdx + i * blockSize;
+    outHisto.m_Data.m_CDF[idx] = CDFMul * s_AccumulateBin[idx];
+  }
+
+}
