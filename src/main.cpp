@@ -1,421 +1,447 @@
-/*
-* Vulkan Example - displacement shader
-*
-* Copyright (C) 2016-2017 by Sascha Willems - www.saschawillems.de
-*
-* This code is licensed under the MIT license (MIT) (http://opensource.org/licenses/MIT)
-*
-*/
-
-/*
-* Vulkan Example - 
-**
-* Modified by William ZHENG
-*
-* This code is licensed under the MIT license (MIT) (http://opensource.org/licenses/MIT)
-*/
-
+/*!*****************************************************************************
+ * @file        main.cpp
+ * @author      Sascha Willems
+ * @co-author   William Zheng
+ * @co-author   Owen Huang Wensong, w.huang, 390008220
+ * @date        25 NOV 2022
+ * @brief   
+ *
+ * @par Copyright (C) 2016 by Sascha Willems - www.saschawillems.de
+*******************************************************************************/
 
 #include "appBase.h"
-#include "vkgltf.h"
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 
+#define VERTEX_BUFFER_BIND_ID 0
 #define ENABLE_VALIDATION true
 
 class VulkanExample : public VkAppBase
 {
 private:
-	struct {
-		vks::Texture2D colorHeightMap;
-	} textures;
+
 public:
-	bool splitScreen = true;
-	bool displacement = true;
+  struct {
+    VkPipelineVertexInputStateCreateInfo inputState;
+    std::vector<VkVertexInputBindingDescription> bindingDescriptions;
+    std::vector<VkVertexInputAttributeDescription> attributeDescriptions;
+  } vertices;
 
-	vkglTF::Model plane;
+  // Resources for the graphics part of the example
+  struct {
+    VkDescriptorSetLayout descriptorSetLayout;	// Image display shader binding layout
+    VkDescriptorSet descriptorSet;	            // Image display shader bindings
+    VkPipeline pipelineFilled;						      // Filled pipeline
+    VkPipeline pipelineWireframe;               // Wireframe pipeline
+    VkPipelineLayout pipelineLayout;			      // Layout of the graphics pipeline
+  } graphics;
 
-	struct {
-		vks::Buffer tessControl, tessEval;
-	} uniformBuffers;
+  vks::Buffer uniformBufferVS;
 
-	struct UBOTessControl {
-		float tessLevel = 64.0f;
-	} uboTessControl;
+  struct {
+    glm::mat4 projection;
+    glm::mat4 modelView;
+  } uboVS;
 
-	struct UBOTessEval {
-		glm::mat4 projection;
-		glm::mat4 modelView;
-		glm::vec4 lightPos = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
-		float tessAlpha = 1.0f;
-		float tessStrength = 0.1f;
-	} uboTessEval;
+  int vertexBufferSize;
 
-	struct Pipelines {
-		VkPipeline solid;
-		VkPipeline wireframe = VK_NULL_HANDLE;
-	} pipelines;
+  std::vector<std::string> shaderNames;
 
-	VkPipelineLayout pipelineLayout;
-	VkDescriptorSet descriptorSet;
-	VkDescriptorSetLayout descriptorSetLayout;
+  VulkanExample() : VkAppBase(ENABLE_VALIDATION)
+  {
+    title = "Compute shader image processing";
+    camera.type = Camera::CameraType::lookat;
+    camera.setPosition(glm::vec3(0.0f, 0.0f, -2.0f));
+    camera.setRotation(glm::vec3(0.0f));
+    camera.setPerspective(60.0f, (float)width * 0.5f / (float)height, 1.0f, 256.0f);
+  }
 
-	VulkanExample() : VkAppBase(ENABLE_VALIDATION)
-	{
-		title = "Tessellation shader displacement";
-		camera.type = Camera::CameraType::lookat;
-		camera.setPosition(glm::vec3(0.0f, 0.0f, -1.25f));
-		camera.setRotation(glm::vec3(-20.0f, 45.0f, 0.0f));
-		camera.setPerspective(60.0f, (float)width / (float)height, 0.1f, 256.0f);
-	}
+  ~VulkanExample()
+  {
+    // Graphics
+    vkDestroyPipeline(device, graphics.pipelineFilled, nullptr);
+    vkDestroyPipeline(device, graphics.pipelineWireframe, nullptr);
+    vkDestroyPipelineLayout(device, graphics.pipelineLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, graphics.descriptorSetLayout, nullptr);
 
-	~VulkanExample()
-	{
-		// Clean up used Vulkan resources
-		// Note : Inherited destructor cleans up resources stored in base class
-		vkDestroyPipeline(device, pipelines.solid, nullptr);
-		if (pipelines.wireframe != VK_NULL_HANDLE) {
-			vkDestroyPipeline(device, pipelines.wireframe, nullptr);
-		};
+    uniformBufferVS.destroy();
+  }
 
-		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+  // Enable physical device features required for this example
+  virtual void getEnabledFeatures()
+  {
+    // Tessellation shader support is required for this example
+    if (deviceFeatures.tessellationShader) {
+      enabledFeatures.tessellationShader = VK_TRUE;
+    }
+    else {
+      vks::tools::exitFatal("Selected GPU does not support tessellation shaders!", VK_ERROR_FEATURE_NOT_PRESENT);
+    }
+    // Fill mode non solid is required for wireframe display
+    if (deviceFeatures.fillModeNonSolid) {
+      enabledFeatures.fillModeNonSolid = VK_TRUE;
+    }
+    else {
+      std::cerr << "wireframe not supported :(" << std::endl;
+    }
+  }
 
-		uniformBuffers.tessControl.destroy();
-		uniformBuffers.tessEval.destroy();
-		textures.colorHeightMap.destroy();
-	}
+  // Prepare a texture target that is used to store compute shader calculations
+  void prepareTextureTarget(vks::Texture* tex, uint32_t width, uint32_t height, VkFormat format)
+  {
+    VkFormatProperties formatProperties;
 
-	// Enable physical device features required for this example
-	virtual void getEnabledFeatures()
-	{
-		// Tessellation shader support is required for this example
-		if (deviceFeatures.tessellationShader) {
-			enabledFeatures.tessellationShader = VK_TRUE;
-		}
-		else {
-			vks::tools::exitFatal("Selected GPU does not support tessellation shaders!", VK_ERROR_FEATURE_NOT_PRESENT);
-		}
-		// Fill mode non solid is required for wireframe display
-		if (deviceFeatures.fillModeNonSolid) {
-			enabledFeatures.fillModeNonSolid = VK_TRUE;
-		}
-		else {
-			splitScreen = false;
-		}
-	}
+    // Get device properties for the requested texture format
+    vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &formatProperties);
+    // Check if requested image format supports image storage operations
+    assert(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
 
-	void loadAssets()
-	{
-		const uint32_t glTFLoadingFlags = vkglTF::FileLoadingFlags::PreTransformVertices | vkglTF::FileLoadingFlags::PreMultiplyVertexColors | vkglTF::FileLoadingFlags::FlipY;
-		plane.loadFromFile(getAssetPath() + "models/displacement_plane.gltf", vulkanDevice, queue, glTFLoadingFlags);
-		textures.colorHeightMap.loadFromFile(getAssetPath() + "textures/stonefloor03_color_height_rgba.ktx", VK_FORMAT_R8G8B8A8_UNORM, vulkanDevice, queue);
-	}
+    // Prepare blit target texture
+    tex->width = width;
+    tex->height = height;
 
-	void buildCommandBuffers()
-	{
-		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
+    VkImageCreateInfo imageCreateInfo = vks::initializers::imageCreateInfo();
+    imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageCreateInfo.format = format;
+    imageCreateInfo.extent = { width, height, 1 };
+    imageCreateInfo.mipLevels = 1;
+    imageCreateInfo.arrayLayers = 1;
+    imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    // Image will be sampled in the fragment shader and used as storage target in the compute shader
+    imageCreateInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    imageCreateInfo.flags = 0;
+    // If compute and graphics queue family indices differ, we create an image that can be shared between them
+    // This can result in worse performance than exclusive sharing mode, but save some synchronization to keep the sample simple
+    std::vector<uint32_t> queueFamilyIndices;
+    if (vulkanDevice->queueFamilyIndices.graphics != vulkanDevice->queueFamilyIndices.compute) {
+      queueFamilyIndices = {
+        vulkanDevice->queueFamilyIndices.graphics,
+        vulkanDevice->queueFamilyIndices.compute
+      };
+      imageCreateInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+      imageCreateInfo.queueFamilyIndexCount = 2;
+      imageCreateInfo.pQueueFamilyIndices = queueFamilyIndices.data();
+    }
 
-		VkClearValue clearValues[2];
-		clearValues[0].color = defaultClearColor;
-		clearValues[1].depthStencil = { 1.0f, 0 };
+    VkMemoryAllocateInfo memAllocInfo = vks::initializers::memoryAllocateInfo();
+    VkMemoryRequirements memReqs;
 
-		VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
-		renderPassBeginInfo.renderPass = renderPass;
-		renderPassBeginInfo.renderArea.offset.x = 0;
-		renderPassBeginInfo.renderArea.offset.y = 0;
-		renderPassBeginInfo.renderArea.extent.width = width;
-		renderPassBeginInfo.renderArea.extent.height = height;
-		renderPassBeginInfo.clearValueCount = 2;
-		renderPassBeginInfo.pClearValues = clearValues;
+    VK_CHECK_RESULT(vkCreateImage(device, &imageCreateInfo, nullptr, &tex->image));
 
-		for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
-		{
-			// Set target frame buffer
-			renderPassBeginInfo.framebuffer = frameBuffers[i];
+    vkGetImageMemoryRequirements(device, tex->image, &memReqs);
+    memAllocInfo.allocationSize = memReqs.size;
+    memAllocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &tex->deviceMemory));
+    VK_CHECK_RESULT(vkBindImageMemory(device, tex->image, tex->deviceMemory, 0));
 
-			VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
+    VkCommandBuffer layoutCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
 
-			vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+    tex->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    vks::tools::setImageLayout(
+      layoutCmd, tex->image,
+      VK_IMAGE_ASPECT_COLOR_BIT,
+      VK_IMAGE_LAYOUT_UNDEFINED,
+      tex->imageLayout);
 
-			VkViewport viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
-			vkCmdSetViewport(drawCmdBuffers[i], 0, 1, &viewport);
+    vulkanDevice->flushCommandBuffer(layoutCmd, queue, true);
 
-			VkRect2D scissor = vks::initializers::rect2D(splitScreen ? width / 2 : width, height, 0, 0);
-			vkCmdSetScissor(drawCmdBuffers[i], 0, 1, &scissor);
+    // Create sampler
+    VkSamplerCreateInfo sampler = vks::initializers::samplerCreateInfo();
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    sampler.addressModeV = sampler.addressModeU;
+    sampler.addressModeW = sampler.addressModeU;
+    sampler.mipLodBias = 0.0f;
+    sampler.maxAnisotropy = 1.0f;
+    sampler.compareOp = VK_COMPARE_OP_NEVER;
+    sampler.minLod = 0.0f;
+    sampler.maxLod = tex->mipLevels;
+    sampler.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    VK_CHECK_RESULT(vkCreateSampler(device, &sampler, nullptr, &tex->sampler));
 
-			vkCmdSetLineWidth(drawCmdBuffers[i], 1.0f);
+    // Create image view
+    VkImageViewCreateInfo view = vks::initializers::imageViewCreateInfo();
+    view.image = VK_NULL_HANDLE;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = format;
+    view.components = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A };
+    view.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    view.image = tex->image;
+    VK_CHECK_RESULT(vkCreateImageView(device, &view, nullptr, &tex->view));
 
-			vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+    // Initialize a descriptor for later use
+    tex->descriptor.imageLayout = tex->imageLayout;
+    tex->descriptor.imageView = tex->view;
+    tex->descriptor.sampler = tex->sampler;
+    tex->device = vulkanDevice;
+  }
 
-			plane.bindBuffers(drawCmdBuffers[i]);
+  void loadAssets()
+  {
 
-			if (splitScreen)
-			{
-				vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.wireframe);
-				plane.draw(drawCmdBuffers[i]);
-				scissor.offset.x = width / 2;
-				vkCmdSetScissor(drawCmdBuffers[i], 0, 1, &scissor);
-			}
+  }
 
-			vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.solid);
-			plane.draw(drawCmdBuffers[i]);
+  void buildCommandBuffers()
+  {
+    VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
-			//drawUI(drawCmdBuffers[i]);
+    VkClearValue clearValues[2];
+    clearValues[0].color = defaultClearColor;
+    clearValues[1].depthStencil = { 1.0f, 0 };
 
-			vkCmdEndRenderPass(drawCmdBuffers[i]);
+    VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
+    renderPassBeginInfo.renderPass = renderPass;
+    renderPassBeginInfo.renderArea.offset.x = 0;
+    renderPassBeginInfo.renderArea.offset.y = 0;
+    renderPassBeginInfo.renderArea.extent.width = width;
+    renderPassBeginInfo.renderArea.extent.height = height;
+    renderPassBeginInfo.clearValueCount = 2;
+    renderPassBeginInfo.pClearValues = clearValues;
+    //std::cout << "drawCmdBuffers size = " << drawCmdBuffers.size() << std::endl;
+    for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
+    {
+      // Set target frame buffer
+      renderPassBeginInfo.framebuffer = frameBuffers[i];
 
-			VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
-		}
-	}
+      VkCommandBuffer cmdBuf{ drawCmdBuffers[i] };
 
-	void setupDescriptorPool()
-	{
-		std::vector<VkDescriptorPoolSize> poolSizes = {
-			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2),
-			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1)
-		};
-		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 2);
-		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
-	}
+      VK_CHECK_RESULT(vkBeginCommandBuffer(cmdBuf, &cmdBufInfo));
 
-	void setupDescriptorSetLayout()
-	{
-		std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings =
-		{
-			// Binding 0 : Tessellation control shader ubo
-			vks::initializers::descriptorSetLayoutBinding(
-				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-				VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
-				0),
-			// Binding 1 : Tessellation evaluation shader ubo
-			vks::initializers::descriptorSetLayoutBinding(
-				VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-				VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
-				1),
-			// Binding 2 : Combined color (rgb) and height (alpha) map
-			vks::initializers::descriptorSetLayoutBinding(
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-				2),
-		};
+      vkCmdBeginRenderPass(cmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-		VkDescriptorSetLayoutCreateInfo descriptorLayout =
-			vks::initializers::descriptorSetLayoutCreateInfo(
-				setLayoutBindings.data(),
-				static_cast<uint32_t>(setLayoutBindings.size()));
+      VkViewport viewport = vks::initializers::viewport(width * 0.5f, static_cast<float>(height), 0.0f, 1.0f);
+      VkRect2D scissor = vks::initializers::rect2D(width, height, 0, 0);
+      vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
-		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorLayout, nullptr, &descriptorSetLayout));
+      { // LEFT
+        vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
+        vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics.pipelineWireframe);
+        vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics.pipelineLayout, 0, 1, &graphics.descriptorSet, 0, nullptr);
+        vkCmdDraw(cmdBuf, 3, 1, 0, 0);
+      }
 
-		VkPipelineLayoutCreateInfo pPipelineLayoutCreateInfo =
-			vks::initializers::pipelineLayoutCreateInfo(
-				&descriptorSetLayout,
-				1);
+      viewport.x += viewport.width; // right side viewport rect min
 
-		VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pPipelineLayoutCreateInfo, nullptr, &pipelineLayout));
-	}
+      { // RIGHT
+        vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
+        vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics.pipelineFilled);
+        vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics.pipelineLayout, 0, 1, &graphics.descriptorSet, 0, nullptr);
+        vkCmdDraw(cmdBuf, 3, 1, 0, 0);
+      }
+      
+      //drawUI(drawCmdBuffers[i]);
 
-	void setupDescriptorSet()
-	{
-		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayout, 1);
-		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
+      vkCmdEndRenderPass(cmdBuf);
 
-		std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
-			// Binding 0 : Tessellation control shader ubo
-			vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &uniformBuffers.tessControl.descriptor),
-			// Binding 1 : Tessellation evaluation shader ubo
-			vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, &uniformBuffers.tessEval.descriptor),
-			// Binding 2 : Color and displacement map (alpha channel)
-			vks::initializers::writeDescriptorSet(descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, &textures.colorHeightMap.descriptor),
-		};
-		vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, NULL);
-	}
+      VK_CHECK_RESULT(vkEndCommandBuffer(cmdBuf));
+    }
 
-	void preparePipelines()
-	{
-		VkPipelineInputAssemblyStateCreateInfo inputAssemblyState =
-			vks::initializers::pipelineInputAssemblyStateCreateInfo(
-				VK_PRIMITIVE_TOPOLOGY_PATCH_LIST,
-				0,
-				VK_FALSE);
+  }
 
-		VkPipelineRasterizationStateCreateInfo rasterizationState =
-			vks::initializers::pipelineRasterizationStateCreateInfo(
-				VK_POLYGON_MODE_FILL,
-				VK_CULL_MODE_BACK_BIT,
-				VK_FRONT_FACE_COUNTER_CLOCKWISE,
-				0);
+  void setupDescriptorPool()
+  {
+    std::vector<VkDescriptorPoolSize> poolSizes = {
+      // Graphics pipelines uniform buffers
+      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2),
+      // Graphics pipelines image samplers for displaying compute output image
+      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2),
+      // Compute pipelines uses a storage image for image reads and writes
+      // note: optimization, not creating new image to store YUV
+      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2),
+      // Compute pipelines for Assignment 3 Part 2 require an SSBO
+      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1)
+    };
+    VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 3);
+    VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
+  }
 
-		VkPipelineColorBlendAttachmentState blendAttachmentState =
-			vks::initializers::pipelineColorBlendAttachmentState(
-				0xf,
-				VK_FALSE);
+  void setupDescriptorSetLayout()
+  {
+    std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings = {
+      // Binding 0: Vertex shader uniform buffer
+      vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT, 0)
+    };
 
-		VkPipelineColorBlendStateCreateInfo colorBlendState =
-			vks::initializers::pipelineColorBlendStateCreateInfo(
-				1,
-				&blendAttachmentState);
+    VkDescriptorSetLayoutCreateInfo descriptorLayout = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
+    VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorLayout, nullptr, &graphics.descriptorSetLayout));
 
-		VkPipelineDepthStencilStateCreateInfo depthStencilState =
-			vks::initializers::pipelineDepthStencilStateCreateInfo(
-				VK_TRUE,
-				VK_TRUE,
-				VK_COMPARE_OP_LESS_OR_EQUAL);
+    VkPipelineLayoutCreateInfo pPipelineLayoutCreateInfo = vks::initializers::pipelineLayoutCreateInfo(&graphics.descriptorSetLayout, 1);
+    VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pPipelineLayoutCreateInfo, nullptr, &graphics.pipelineLayout));
+  }
 
-		VkPipelineViewportStateCreateInfo viewportState =
-			vks::initializers::pipelineViewportStateCreateInfo(1, 1, 0);
+  void setupDescriptorSet()
+  {
+    VkDescriptorSetAllocateInfo allocInfo =
+      vks::initializers::descriptorSetAllocateInfo(descriptorPool, &graphics.descriptorSetLayout, 1);
 
-		VkPipelineMultisampleStateCreateInfo multisampleState =
-			vks::initializers::pipelineMultisampleStateCreateInfo(
-				VK_SAMPLE_COUNT_1_BIT,
-				0);
+    // Graphics
+    VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &graphics.descriptorSet));
+    std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
+      vks::initializers::writeDescriptorSet(graphics.descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &uniformBufferVS.descriptor)
+    };
+    vkUpdateDescriptorSets(device, writeDescriptorSets.size(), writeDescriptorSets.data(), 0, nullptr);
+  }
 
-		std::vector<VkDynamicState> dynamicStateEnables = {
-			VK_DYNAMIC_STATE_VIEWPORT,
-			VK_DYNAMIC_STATE_SCISSOR,
-			VK_DYNAMIC_STATE_LINE_WIDTH
-		};
-		VkPipelineDynamicStateCreateInfo dynamicState =
-			vks::initializers::pipelineDynamicStateCreateInfo(
-				dynamicStateEnables.data(),
-				static_cast<uint32_t>(dynamicStateEnables.size()),
-				0);
+  void preparePipelines()
+  {
+    VkPipelineVertexInputStateCreateInfo vertexInputState{ vks::initializers::pipelineVertexInputStateCreateInfo() };
 
-		VkPipelineTessellationStateCreateInfo tessellationState =
-			vks::initializers::pipelineTessellationStateCreateInfo(3);
+    VkPipelineInputAssemblyStateCreateInfo inputAssemblyState
+    { vks::initializers::pipelineInputAssemblyStateCreateInfo(
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        0,
+        VK_FALSE
+    ) };
 
-		// Tessellation pipeline
-		// Load shaders
-		std::array<VkPipelineShaderStageCreateInfo, 4> shaderStages;
-		shaderStages[0] = loadShader(getShadersPath() + "displacement/base.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
-		shaderStages[1] = loadShader(getShadersPath() + "displacement/base.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
-		shaderStages[2] = loadShader(getShadersPath() + "displacement/displacement.tesc.spv", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
-		shaderStages[3] = loadShader(getShadersPath() + "displacement/displacement.tese.spv", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+    VkPipelineRasterizationStateCreateInfo rasterizationState =
+      vks::initializers::pipelineRasterizationStateCreateInfo(
+        VK_POLYGON_MODE_FILL,
+        VK_CULL_MODE_NONE,
+        VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        0);
 
-		VkGraphicsPipelineCreateInfo pipelineCI = vks::initializers::pipelineCreateInfo(pipelineLayout, renderPass);
-		pipelineCI.pInputAssemblyState = &inputAssemblyState;
-		pipelineCI.pRasterizationState = &rasterizationState;
-		pipelineCI.pColorBlendState = &colorBlendState;
-		pipelineCI.pMultisampleState = &multisampleState;
-		pipelineCI.pViewportState = &viewportState;
-		pipelineCI.pDepthStencilState = &depthStencilState;
-		pipelineCI.pDynamicState = &dynamicState;
-		pipelineCI.pTessellationState = &tessellationState;
-		pipelineCI.stageCount = static_cast<uint32_t>(shaderStages.size());
-		pipelineCI.pStages = shaderStages.data();
-		pipelineCI.pVertexInputState = vkglTF::Vertex::getPipelineVertexInputState({ vkglTF::VertexComponent::Position, vkglTF::VertexComponent::Normal, vkglTF::VertexComponent::UV });
+    VkPipelineColorBlendAttachmentState blendAttachmentState =
+      vks::initializers::pipelineColorBlendAttachmentState(
+        0xf,
+        VK_FALSE);
 
-		// Solid pipeline
-		VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipelines.solid));
-		if (deviceFeatures.fillModeNonSolid) {
-			// Wireframe pipeline
-			rasterizationState.polygonMode = VK_POLYGON_MODE_LINE;
-			rasterizationState.cullMode = VK_CULL_MODE_NONE;
-			VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipelines.wireframe));
-		}
-	}
+    VkPipelineColorBlendStateCreateInfo colorBlendState =
+      vks::initializers::pipelineColorBlendStateCreateInfo(
+        1,
+        &blendAttachmentState);
 
-	// Prepare and initialize uniform buffer containing shader uniforms
-	void prepareUniformBuffers()
-	{
-		// Tessellation evaluation shader uniform buffer
-		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&uniformBuffers.tessEval,
-			sizeof(uboTessEval)));
+    VkPipelineDepthStencilStateCreateInfo depthStencilState =
+      vks::initializers::pipelineDepthStencilStateCreateInfo(
+        VK_TRUE,
+        VK_TRUE,
+        VK_COMPARE_OP_LESS_OR_EQUAL);
 
-		// Tessellation control shader uniform buffer
-		VK_CHECK_RESULT(vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&uniformBuffers.tessControl,
-			sizeof(uboTessControl)));
+    VkPipelineViewportStateCreateInfo viewportState =
+      vks::initializers::pipelineViewportStateCreateInfo(1, 1, 0);
 
-		// Map persistent
-		VK_CHECK_RESULT(uniformBuffers.tessControl.map());
-		VK_CHECK_RESULT(uniformBuffers.tessEval.map());
+    VkPipelineMultisampleStateCreateInfo multisampleState =
+      vks::initializers::pipelineMultisampleStateCreateInfo(
+        VK_SAMPLE_COUNT_1_BIT,
+        0);
 
-		updateUniformBuffers();
-	}
+    std::vector<VkDynamicState> dynamicStateEnables = {
+      VK_DYNAMIC_STATE_VIEWPORT,
+      VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamicState =
+      vks::initializers::pipelineDynamicStateCreateInfo(
+        dynamicStateEnables.data(),
+        dynamicStateEnables.size(),
+        0);
 
-	void updateUniformBuffers()
-	{
-		uboTessEval.projection = camera.matrices.perspective;
-		uboTessEval.modelView = camera.matrices.view;
-		uboTessEval.lightPos.y = -0.5f - uboTessEval.tessStrength;
-		memcpy(uniformBuffers.tessEval.mapped, &uboTessEval, sizeof(uboTessEval));
+    // Rendering pipeline
+    // Load shaders
+    std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages;
 
-		// Tessellation control
-		float savedLevel = uboTessControl.tessLevel;
-		if (!displacement)
-		{
-			uboTessControl.tessLevel = 1.0f;
-		}
+    shaderStages[0] = loadShader(getShadersPath() + "test/genTri.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+    shaderStages[1] = loadShader(getShadersPath() + "test/genTri.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 
-		memcpy(uniformBuffers.tessControl.mapped, &uboTessControl, sizeof(uboTessControl));
+    VkGraphicsPipelineCreateInfo pipelineCreateInfo =
+      vks::initializers::pipelineCreateInfo(
+        graphics.pipelineLayout,
+        renderPass,
+        0);
 
-		if (!displacement)
-		{
-			uboTessControl.tessLevel = savedLevel;
-		}
-	}
+    pipelineCreateInfo.pVertexInputState = &vertexInputState;
+    pipelineCreateInfo.pInputAssemblyState = &inputAssemblyState;
+    pipelineCreateInfo.pRasterizationState = &rasterizationState;
+    pipelineCreateInfo.pColorBlendState = &colorBlendState;
+    pipelineCreateInfo.pMultisampleState = &multisampleState;
+    pipelineCreateInfo.pViewportState = &viewportState;
+    pipelineCreateInfo.pDepthStencilState = &depthStencilState;
+    pipelineCreateInfo.pDynamicState = &dynamicState;
+    pipelineCreateInfo.stageCount = shaderStages.size();
+    pipelineCreateInfo.pStages = shaderStages.data();
+    pipelineCreateInfo.renderPass = renderPass;
 
-	void draw()
-	{
-		VkAppBase::prepareFrame();
+    VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCreateInfo, nullptr, &graphics.pipelineFilled));
 
-		// Command buffer to be submitted to the queue
-		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
+    rasterizationState.polygonMode = VK_POLYGON_MODE_LINE;
 
-		// Submit to queue
-		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+    VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCreateInfo, nullptr, &graphics.pipelineWireframe));
+  }
 
-		VkAppBase::submitFrame();
-	}
+  // Prepare and initialize uniform buffer containing shader uniforms
+  void prepareUniformBuffers()
+  {
+    // Vertex shader uniform buffer block
+    VK_CHECK_RESULT(vulkanDevice->createBuffer(
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      &uniformBufferVS,
+      sizeof(uboVS)));
 
-	void prepare()
-	{
-		VkAppBase::prepare();
-		loadAssets();
-		prepareUniformBuffers();
-		setupDescriptorSetLayout();
-		preparePipelines();
-		setupDescriptorPool();
-		setupDescriptorSet();
-		buildCommandBuffers();
-		prepared = true;
-	}
+    // Map persistent
+    VK_CHECK_RESULT(uniformBufferVS.map());
 
-	virtual void render()
-	{
-		if (!prepared)
-			return;
-		draw();
-		if (camera.updated) {
-			updateUniformBuffers();
-		}
-	}
-	virtual void OnUpdateUIOverlay(vks::UIOverlay* overlay)
-	{
-		if (overlay->header("Settings")) {
-			if (overlay->checkBox("Tessellation displacement", &displacement)) {
-				updateUniformBuffers();
-			}
-			if (overlay->inputFloat("Strength", &uboTessEval.tessStrength, 0.025f, 3)) {
-				updateUniformBuffers();
-			}
-			if (overlay->inputFloat("Level", &uboTessControl.tessLevel, 0.5f, 2)) {
-				updateUniformBuffers();
-			}
-			if (deviceFeatures.fillModeNonSolid) {
-				if (overlay->checkBox("Splitscreen", &splitScreen)) {
-					buildCommandBuffers();
-					updateUniformBuffers();
-				}
-			}
+    updateUniformBuffers();
+  }
 
-		}
-	}
+  void updateUniformBuffers()
+  {
+    uboVS.projection = camera.matrices.perspective;
+    uboVS.modelView = camera.matrices.view;
+    memcpy(uniformBufferVS.mapped, &uboVS, sizeof(uboVS));
+  }
+
+  // Ignoring template 7: using in-queue execution barriers
+  void draw()
+  {
+    VkAppBase::prepareFrame();
+
+    VkPipelineStageFlags graphicsWaitStageMasks[] = { VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    VkSemaphore graphicsWaitSemaphores[] = { semaphores.presentComplete };
+    VkSemaphore graphicsSignalSemaphores[] = { semaphores.renderComplete };
+
+    // Submit graphics commands
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = graphicsWaitSemaphores;
+    submitInfo.pWaitDstStageMask = graphicsWaitStageMasks;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = graphicsSignalSemaphores;
+    VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+
+    VkAppBase::submitFrame();
+  }
+
+  // Ignoring template 8: changes made directly to prepareCompute
+  void prepare()
+  {
+    VkAppBase::prepare();
+    loadAssets();
+    prepareUniformBuffers();
+    setupDescriptorSetLayout();
+    preparePipelines();
+    setupDescriptorPool();
+    setupDescriptorSet();
+    buildCommandBuffers();
+    prepared = true;
+  }
+
+  virtual void render()
+  {
+    if (!prepared)
+      return;
+    draw();
+    if (camera.updated) {
+      updateUniformBuffers();
+    }
+  }
+
+  virtual void OnUpdateUIOverlay(vks::UIOverlay* /*overlay*/)
+  {
+    
+  }
 };
 
 VULKAN_EXAMPLE_MAIN()
