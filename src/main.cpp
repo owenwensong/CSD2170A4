@@ -38,17 +38,13 @@ public:
     glm::mat4 modelView;
   } uboVS;
 
-  int vertexBufferSize;
-
-  std::vector<std::string> shaderNames;
-
   VulkanExample() : VkAppBase(ENABLE_VALIDATION)
   {
     title = "Compute shader image processing";
     camera.type = Camera::CameraType::lookat;
     camera.setPosition(glm::vec3(0.0f, 0.0f, -2.0f));
     camera.setRotation(glm::vec3(0.0f));
-    camera.setPerspective(60.0f, (float)width * 0.5f / (float)height, 1.0f, 256.0f);
+    camera.setPerspective(60.0f, width * 0.5f / static_cast<float>(height), 1.0f, 256.0f);
   }
 
   ~VulkanExample()
@@ -79,99 +75,6 @@ public:
     else {
       std::cerr << "wireframe not supported :(" << std::endl;
     }
-  }
-
-  // Prepare a texture target that is used to store compute shader calculations
-  void prepareTextureTarget(vks::Texture* tex, uint32_t width, uint32_t height, VkFormat format)
-  {
-    VkFormatProperties formatProperties;
-
-    // Get device properties for the requested texture format
-    vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &formatProperties);
-    // Check if requested image format supports image storage operations
-    assert(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
-
-    // Prepare blit target texture
-    tex->width = width;
-    tex->height = height;
-
-    VkImageCreateInfo imageCreateInfo = vks::initializers::imageCreateInfo();
-    imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageCreateInfo.format = format;
-    imageCreateInfo.extent = { width, height, 1 };
-    imageCreateInfo.mipLevels = 1;
-    imageCreateInfo.arrayLayers = 1;
-    imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    // Image will be sampled in the fragment shader and used as storage target in the compute shader
-    imageCreateInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-    imageCreateInfo.flags = 0;
-    // If compute and graphics queue family indices differ, we create an image that can be shared between them
-    // This can result in worse performance than exclusive sharing mode, but save some synchronization to keep the sample simple
-    std::vector<uint32_t> queueFamilyIndices;
-    if (vulkanDevice->queueFamilyIndices.graphics != vulkanDevice->queueFamilyIndices.compute) {
-      queueFamilyIndices = {
-        vulkanDevice->queueFamilyIndices.graphics,
-        vulkanDevice->queueFamilyIndices.compute
-      };
-      imageCreateInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
-      imageCreateInfo.queueFamilyIndexCount = 2;
-      imageCreateInfo.pQueueFamilyIndices = queueFamilyIndices.data();
-    }
-
-    VkMemoryAllocateInfo memAllocInfo = vks::initializers::memoryAllocateInfo();
-    VkMemoryRequirements memReqs;
-
-    VK_CHECK_RESULT(vkCreateImage(device, &imageCreateInfo, nullptr, &tex->image));
-
-    vkGetImageMemoryRequirements(device, tex->image, &memReqs);
-    memAllocInfo.allocationSize = memReqs.size;
-    memAllocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &tex->deviceMemory));
-    VK_CHECK_RESULT(vkBindImageMemory(device, tex->image, tex->deviceMemory, 0));
-
-    VkCommandBuffer layoutCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-
-    tex->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    vks::tools::setImageLayout(
-      layoutCmd, tex->image,
-      VK_IMAGE_ASPECT_COLOR_BIT,
-      VK_IMAGE_LAYOUT_UNDEFINED,
-      tex->imageLayout);
-
-    vulkanDevice->flushCommandBuffer(layoutCmd, queue, true);
-
-    // Create sampler
-    VkSamplerCreateInfo sampler = vks::initializers::samplerCreateInfo();
-    sampler.magFilter = VK_FILTER_LINEAR;
-    sampler.minFilter = VK_FILTER_LINEAR;
-    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    sampler.addressModeV = sampler.addressModeU;
-    sampler.addressModeW = sampler.addressModeU;
-    sampler.mipLodBias = 0.0f;
-    sampler.maxAnisotropy = 1.0f;
-    sampler.compareOp = VK_COMPARE_OP_NEVER;
-    sampler.minLod = 0.0f;
-    sampler.maxLod = tex->mipLevels;
-    sampler.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-    VK_CHECK_RESULT(vkCreateSampler(device, &sampler, nullptr, &tex->sampler));
-
-    // Create image view
-    VkImageViewCreateInfo view = vks::initializers::imageViewCreateInfo();
-    view.image = VK_NULL_HANDLE;
-    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view.format = format;
-    view.components = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A };
-    view.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    view.image = tex->image;
-    VK_CHECK_RESULT(vkCreateImageView(device, &view, nullptr, &tex->view));
-
-    // Initialize a descriptor for later use
-    tex->descriptor.imageLayout = tex->imageLayout;
-    tex->descriptor.imageView = tex->view;
-    tex->descriptor.sampler = tex->sampler;
-    tex->device = vulkanDevice;
   }
 
   void loadAssets()
