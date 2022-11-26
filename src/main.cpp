@@ -239,10 +239,10 @@ public:
     // Load shaders
     std::array<VkPipelineShaderStageCreateInfo, 4> shaderStages
     {
-      loadShader(getShadersPath() + "ellipsoid.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
-      loadShader(getShadersPath() + "ellipsoid.tesc.spv", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT),
-      loadShader(getShadersPath() + "ellipsoid.tese.spv", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT),
-      loadShader(getShadersPath() + "ellipsoid.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT)
+      loadShader(getShadersPath() + "a4/ellipsoid.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
+      loadShader(getShadersPath() + "a4/ellipsoid.tesc.spv", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT),
+      loadShader(getShadersPath() + "a4/ellipsoid.tese.spv", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT),
+      loadShader(getShadersPath() + "a4/ellipsoid.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT)
     };
 
     VkGraphicsPipelineCreateInfo pipelineCreateInfo =
