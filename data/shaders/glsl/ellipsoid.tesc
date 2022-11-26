@@ -12,8 +12,8 @@
 
 layout (binding = 0) uniform UBO 
 {
-	mat4 m_View;
-	mat4 m_Proj;
+  mat4 m_View;
+  mat4 m_Proj;
   vec4 m_Center;
   vec4 m_ScaleAndTeslvl;
 } ubo;
@@ -27,13 +27,13 @@ layout (vertices = 1) out;
 void main()
 {
   if (gl_InvocationID == 0)
-	{
-		gl_TessLevelOuter[0] = ubo.m_ScaleAndTeslvl.w;
-		gl_TessLevelOuter[1] = ubo.m_ScaleAndTeslvl.w;
-		gl_TessLevelOuter[2] = ubo.m_ScaleAndTeslvl.w;
-		gl_TessLevelOuter[3] = ubo.m_ScaleAndTeslvl.w;
+  {
+    gl_TessLevelOuter[0] = ubo.m_ScaleAndTeslvl.w;
+    gl_TessLevelOuter[1] = ubo.m_ScaleAndTeslvl.w;
+    gl_TessLevelOuter[2] = ubo.m_ScaleAndTeslvl.w;
+    gl_TessLevelOuter[3] = ubo.m_ScaleAndTeslvl.w;
 
     gl_TessLevelInner[0] = ubo.m_ScaleAndTeslvl.w;
-		gl_TessLevelInner[1] = ubo.m_ScaleAndTeslvl.w;
-	}
+    gl_TessLevelInner[1] = ubo.m_ScaleAndTeslvl.w;
+  }
 } 

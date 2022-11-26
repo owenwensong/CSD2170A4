@@ -12,8 +12,8 @@
 
 layout (binding = 0) uniform UBO 
 {
-	mat4 m_View;
-	mat4 m_Proj;
+  mat4 m_View;
+  mat4 m_Proj;
   vec4 m_Center;
   vec4 m_ScaleAndTeslvl;
 } ubo;

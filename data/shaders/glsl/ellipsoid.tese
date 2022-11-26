@@ -14,8 +14,8 @@ layout(quads, equal_spacing, ccw) in;
 
 layout (binding = 0) uniform UBO 
 {
-	mat4 m_View;
-	mat4 m_Proj;
+  mat4 m_View;
+  mat4 m_Proj;
   vec4 m_Center;
   vec4 m_ScaleAndTeslvl;
 } ubo;
@@ -39,5 +39,5 @@ void main()
   vec3 spherePos = vec3(cosPhi * cos(theta), sin(phi), cosPhi * sin(theta));
   te_Col = clamp(spherePos, 0.0, 1.0);
   
-	gl_Position = ubo.m_Proj * ubo.m_View * vec4(center + scale * spherePos, 1.0);
+  gl_Position = ubo.m_Proj * ubo.m_View * vec4(center + scale * spherePos, 1.0);
 }
