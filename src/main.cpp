@@ -21,11 +21,6 @@ class VulkanExample : public VkAppBase
 private:
 
 public:
-  struct {
-    VkPipelineVertexInputStateCreateInfo inputState;
-    std::vector<VkVertexInputBindingDescription> bindingDescriptions;
-    std::vector<VkVertexInputAttributeDescription> attributeDescriptions;
-  } vertices;
 
   // Resources for the graphics part of the example
   struct {
