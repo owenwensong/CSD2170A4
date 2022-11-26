@@ -4,7 +4,8 @@
  * @co-author   William Zheng
  * @co-author   Owen Huang Wensong, w.huang, 390008220
  * @date        25 NOV 2022
- * @brief   
+ * @brief       Assignment 4 entry point. This file is a modified version of
+ *              Assignment 3 part 2 main file.
  *
  * @par Copyright (C) 2016 by Sascha Willems - www.saschawillems.de
 *******************************************************************************/
@@ -31,16 +32,21 @@ public:
     VkPipelineLayout pipelineLayout;			      // Layout of the graphics pipeline
   } graphics;
 
-  vks::Buffer uniformBufferVS;
+  vks::Buffer UBOGlobal_Device;
 
-  struct {
-    glm::mat4 projection;
-    glm::mat4 modelView;
-  } uboVS;
+  // use same uniform buffer for all shader stages out of laziness
+  struct UBOGlobal
+  {
+    glm::mat4 m_View;
+    glm::mat4 m_Proj;
+    glm::vec4 m_Center{ 0.0f, -0.25f, 0.0f, 1.0f }; // center of the ellipsoid
+    // x: a param, y: b param, z: c param, w: tessellation level
+    glm::vec4 m_ScaleAndTeslvl{ 0.25f, 0.5f, 0.25f, 64.0f };
+  } UBOGlobal_Host;
 
   VulkanExample() : VkAppBase(ENABLE_VALIDATION)
   {
-    title = "Compute shader image processing";
+    title = "CSD2170 Assignment 4 | Tessellation | Owen Huang Wensong";
     camera.type = Camera::CameraType::lookat;
     camera.setPosition(glm::vec3(0.0f, 0.0f, -2.0f));
     camera.setRotation(glm::vec3(0.0f));
@@ -55,7 +61,7 @@ public:
     vkDestroyPipelineLayout(device, graphics.pipelineLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, graphics.descriptorSetLayout, nullptr);
 
-    uniformBufferVS.destroy();
+    UBOGlobal_Device.destroy();
   }
 
   // Enable physical device features required for this example
@@ -118,7 +124,7 @@ public:
         vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
         vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics.pipelineWireframe);
         vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics.pipelineLayout, 0, 1, &graphics.descriptorSet, 0, nullptr);
-        vkCmdDraw(cmdBuf, 3, 1, 0, 0);
+        vkCmdDraw(cmdBuf, 1, 1, 0, 0);
       }
 
       viewport.x += viewport.width; // right side viewport rect min
@@ -127,10 +133,10 @@ public:
         vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
         vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics.pipelineFilled);
         vkCmdBindDescriptorSets(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics.pipelineLayout, 0, 1, &graphics.descriptorSet, 0, nullptr);
-        vkCmdDraw(cmdBuf, 3, 1, 0, 0);
+        vkCmdDraw(cmdBuf, 1, 1, 0, 0);
       }
       
-      //drawUI(drawCmdBuffers[i]);
+      //drawUI(cmdBuf);
 
       vkCmdEndRenderPass(cmdBuf);
 
@@ -143,16 +149,9 @@ public:
   {
     std::vector<VkDescriptorPoolSize> poolSizes = {
       // Graphics pipelines uniform buffers
-      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2),
-      // Graphics pipelines image samplers for displaying compute output image
-      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2),
-      // Compute pipelines uses a storage image for image reads and writes
-      // note: optimization, not creating new image to store YUV
-      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2),
-      // Compute pipelines for Assignment 3 Part 2 require an SSBO
-      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1)
+      vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1)
     };
-    VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 3);
+    VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 1);
     VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
   }
 
@@ -160,7 +159,7 @@ public:
   {
     std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings = {
       // Binding 0: Vertex shader uniform buffer
-      vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT, 0)
+      vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 0)
     };
 
     VkDescriptorSetLayoutCreateInfo descriptorLayout = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
@@ -178,9 +177,9 @@ public:
     // Graphics
     VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &graphics.descriptorSet));
     std::vector<VkWriteDescriptorSet> writeDescriptorSets = {
-      vks::initializers::writeDescriptorSet(graphics.descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &uniformBufferVS.descriptor)
+      vks::initializers::writeDescriptorSet(graphics.descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &UBOGlobal_Device.descriptor)
     };
-    vkUpdateDescriptorSets(device, writeDescriptorSets.size(), writeDescriptorSets.data(), 0, nullptr);
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
   }
 
   void preparePipelines()
@@ -189,10 +188,12 @@ public:
 
     VkPipelineInputAssemblyStateCreateInfo inputAssemblyState
     { vks::initializers::pipelineInputAssemblyStateCreateInfo(
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        VK_PRIMITIVE_TOPOLOGY_PATCH_LIST,
         0,
         VK_FALSE
     ) };
+
+    VkPipelineTessellationStateCreateInfo tessellationState{ vks::initializers::pipelineTessellationStateCreateInfo(1) };
 
     VkPipelineRasterizationStateCreateInfo rasterizationState =
       vks::initializers::pipelineRasterizationStateCreateInfo(
@@ -232,15 +233,17 @@ public:
     VkPipelineDynamicStateCreateInfo dynamicState =
       vks::initializers::pipelineDynamicStateCreateInfo(
         dynamicStateEnables.data(),
-        dynamicStateEnables.size(),
+        static_cast<uint32_t>(dynamicStateEnables.size()),
         0);
 
-    // Rendering pipeline
     // Load shaders
-    std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages;
-
-    shaderStages[0] = loadShader(getShadersPath() + "test/genTri.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
-    shaderStages[1] = loadShader(getShadersPath() + "test/genTri.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+    std::array<VkPipelineShaderStageCreateInfo, 4> shaderStages
+    {
+      loadShader(getShadersPath() + "ellipsoid.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
+      loadShader(getShadersPath() + "ellipsoid.tesc.spv", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT),
+      loadShader(getShadersPath() + "ellipsoid.tese.spv", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT),
+      loadShader(getShadersPath() + "ellipsoid.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT)
+    };
 
     VkGraphicsPipelineCreateInfo pipelineCreateInfo =
       vks::initializers::pipelineCreateInfo(
@@ -250,13 +253,14 @@ public:
 
     pipelineCreateInfo.pVertexInputState = &vertexInputState;
     pipelineCreateInfo.pInputAssemblyState = &inputAssemblyState;
+    pipelineCreateInfo.pTessellationState = &tessellationState;
     pipelineCreateInfo.pRasterizationState = &rasterizationState;
     pipelineCreateInfo.pColorBlendState = &colorBlendState;
     pipelineCreateInfo.pMultisampleState = &multisampleState;
     pipelineCreateInfo.pViewportState = &viewportState;
     pipelineCreateInfo.pDepthStencilState = &depthStencilState;
     pipelineCreateInfo.pDynamicState = &dynamicState;
-    pipelineCreateInfo.stageCount = shaderStages.size();
+    pipelineCreateInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
     pipelineCreateInfo.pStages = shaderStages.data();
     pipelineCreateInfo.renderPass = renderPass;
 
@@ -274,20 +278,20 @@ public:
     VK_CHECK_RESULT(vulkanDevice->createBuffer(
       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      &uniformBufferVS,
-      sizeof(uboVS)));
+      &UBOGlobal_Device,
+      sizeof(UBOGlobal)));
 
     // Map persistent
-    VK_CHECK_RESULT(uniformBufferVS.map());
+    VK_CHECK_RESULT(UBOGlobal_Device.map());
 
     updateUniformBuffers();
   }
 
   void updateUniformBuffers()
   {
-    uboVS.projection = camera.matrices.perspective;
-    uboVS.modelView = camera.matrices.view;
-    memcpy(uniformBufferVS.mapped, &uboVS, sizeof(uboVS));
+    UBOGlobal_Host.m_View = camera.matrices.view;
+    UBOGlobal_Host.m_Proj = camera.matrices.perspective;
+    memcpy(UBOGlobal_Device.mapped, &UBOGlobal_Host, sizeof(UBOGlobal));
   }
 
   // Ignoring template 7: using in-queue execution barriers
@@ -336,9 +340,39 @@ public:
     }
   }
 
-  virtual void OnUpdateUIOverlay(vks::UIOverlay* /*overlay*/)
+  virtual void OnUpdateUIOverlay(vks::UIOverlay* overlay)
   {
-    
+    if (overlay->header("Settings"))
+    {
+      if (overlay->inputFloat("Center X", &UBOGlobal_Host.m_Center.x, 0.125f, 3))
+      {
+        updateUniformBuffers();
+      }
+      if (overlay->inputFloat("Center Y", &UBOGlobal_Host.m_Center.y, 0.125f, 3))
+      {
+        updateUniformBuffers();
+      }
+      if (overlay->inputFloat("Center Z", &UBOGlobal_Host.m_Center.z, 0.125f, 3))
+      {
+        updateUniformBuffers();
+      }
+      if (overlay->inputFloat("ellipsoid a", &UBOGlobal_Host.m_ScaleAndTeslvl.x, 0.125f, 3))
+      {
+        updateUniformBuffers();
+      }
+      if (overlay->inputFloat("ellipsoid b", &UBOGlobal_Host.m_ScaleAndTeslvl.y, 0.125f, 3))
+      {
+        updateUniformBuffers();
+      }
+      if (overlay->inputFloat("ellipsoid c", &UBOGlobal_Host.m_ScaleAndTeslvl.z, 0.125f, 3))
+      {
+        updateUniformBuffers();
+      }
+      if (overlay->inputFloat("tessellation strength", &UBOGlobal_Host.m_ScaleAndTeslvl.w, 1.0, 3))
+      {
+        updateUniformBuffers();
+      }
+    }
   }
 };
 
